@@ -1,0 +1,11 @@
+[package]
+name = "smt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egg="0.9.0"
+ordered-float = "2.1" # 或最新版本
+regex = "1.8"
+log = "0.4"
+env_logger = "0.10"

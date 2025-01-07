@@ -1,0 +1,1 @@
+重写：cargo run --{source.smt} {target.smt}
