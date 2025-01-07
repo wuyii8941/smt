@@ -1,3 +1,6 @@
+/* 表达式重写
+smt_rewrite
+*/ 
 use egg::{rewrite as rw, *};
 use egg::{Applier, EGraph, Id, Rewrite, Subst};
 
@@ -5,7 +8,7 @@ use crate::smt_lang::SmtLang;
 use crate::smt_lang::SmtLang::{Pow, Constant, AddMultiset, Mul};
 
 use ordered_float::NotNan;
-use std::str::FromStr; // 确保可以使用 from_str 方法
+use std::str::FromStr; 
 use log::debug;
 
 
@@ -13,6 +16,7 @@ use log::debug;
 #[derive(Default)]
 pub struct ConstantFold;
 
+//验证mulset是否符合pattern
 fn validate_mulset(
     egraph: &EGraph<SmtLang, ()>, 
     a: Id, 
@@ -21,7 +25,6 @@ fn validate_mulset(
 ) -> Option<(Id, Id)> {
     println!("Validating mulset: ?a = {:?}, ?b = {:?}, ?c = {:?}", a, b, c);
 
-    // Helper function to check if a node is a square term (e.g., (^ x 2))
     let is_square = |id: Id| -> Option<Id> {
         for node in &egraph[id].nodes {
             if let SmtLang::Pow([base, exponent]) = node {
@@ -43,11 +46,9 @@ fn validate_mulset(
         None
     };
 
-    // Validate if `a` and `b` are square terms
     let a_base = is_square(a)?;
     let b_base = is_square(b)?;
 
-    // Helper to extract the `Symbol` value from an `Id`
     let get_symbol = |id: Id| -> Option<&egg::Symbol> {
         egraph[id].nodes.iter().find_map(|node| {
             if let SmtLang::Symbol(s) = node {
@@ -58,7 +59,6 @@ fn validate_mulset(
         })
     };
 
-    // Check if `c` matches the structure `(* (* 2 a_base) b_base)`
     let is_valid_c = egraph[c].nodes.iter().any(|node| {
         if let SmtLang::MulMultiset(children) = node {
             let mut has_two = false;
