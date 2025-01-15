@@ -1,11 +1,6 @@
-/* 表达式解析
-smt_parser
-*/ 
 use egg::*;
 use std::fs;
 use ordered_float::NotNan;
-use std::collections::HashSet;
-
 
 use crate::smt_lang;
 use crate::smt_lang::SmtLang;
@@ -51,22 +46,20 @@ pub fn parse_smt_expression(expr: &str, builder: &mut RecExpr<SmtLang>) -> Resul
        .collect::<Result<_, _>>()?;
 
     let op = match operator {
-"+" => {
-    let mut combined = Vec::new();
-    for &arg in &arg_ids {
-        combined.push(arg);
-    }
-    combined.sort(); // 对元素排序，确保无序匹配
-    SmtLang::AddMultiset(combined)
-},
-"*" => {
-    let mut combined = Vec::new();
-    for &arg in &arg_ids {
-        combined.push(arg);
-    }
-    combined.sort(); // 对元素排序，确保无序匹配
-    SmtLang::MulMultiset(combined)
-},
+        "+" => {
+            let mut combined = arg_ids[0];
+            for &arg in &arg_ids[1..] {
+                combined = builder.add(SmtLang::Add([combined, arg]));
+            }
+            return Ok(combined);
+        }
+        "*" => {
+            let mut combined = arg_ids[0];
+            for &arg in &arg_ids[1..] {
+                combined = builder.add(SmtLang::Mul([combined, arg]));
+            }
+            return Ok(combined);
+        }
         "-" => SmtLang::Sub([arg_ids[0], arg_ids[1]]),
         "/" => SmtLang::Div([arg_ids[0], arg_ids[1]]),
         "^" => SmtLang::Pow([arg_ids[0], arg_ids[1]]),
@@ -147,13 +140,11 @@ pub fn load_expressions(file_path: &str) -> Result<Vec<RecExpr<SmtLang>>, String
                 let mut builder = RecExpr::default();
                 parse_smt_expression(inner, &mut builder)
                    .map_err(|e| format!("Failed to parse expression: {}", e))?;
-                println!("RecExpr after parsing: {:?}", builder);
-
                 expressions.push(builder);
             }
-
         }
     }
+
     if expressions.is_empty() {
         Err("No valid expressions found in the file".to_string())
     } else {

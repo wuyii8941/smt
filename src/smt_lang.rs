@@ -1,5 +1,4 @@
-/* smt语言定义
-*/ 
+
 use egg::*;
 use ordered_float::NotNan;
 
@@ -27,8 +26,6 @@ pub enum Smt {
 
 define_language! {
     pub enum SmtLang {
-        "add" = AddMultiset(Vec<Id>),  // 多项加法
-        "mul" = MulMultiset(Vec<Id>),  // 多项乘法
         "+" = Add([Id; 2]),
         "-" = Sub([Id; 2]),
         "*" = Mul([Id; 2]),

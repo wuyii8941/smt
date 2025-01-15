@@ -1,6 +1,3 @@
-/* 生成后表达式转化
-smt_generator
-*/ 
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 

@@ -1,8 +1,5 @@
-/* 主流程 */ 
 use std::env;
 use std::process;
-use env_logger;
-
 
 mod smt_lang;
 mod smt_parser;
@@ -11,8 +8,6 @@ mod smt_generator;
 
 
 fn main() {
-    env_logger::init(); // 初始化日志
-
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
         eprintln!("Usage: {} <input_file> <output_file>", args[0]);

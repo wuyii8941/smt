@@ -1,145 +1,10 @@
-/* 表达式重写
-smt_rewrite
-*/ 
 use egg::{rewrite as rw, *};
-use egg::{Applier, EGraph, Id, Rewrite, Subst};
-
 use crate::smt_lang::SmtLang;
-use crate::smt_lang::SmtLang::{Pow, Constant, AddMultiset, Mul};
-
 use ordered_float::NotNan;
-use std::str::FromStr; 
-use log::debug;
-
-
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct ConstantFold;
-
-//验证mulset是否符合pattern
-fn validate_mulset(
-    egraph: &EGraph<SmtLang, ()>, 
-    a: Id, 
-    b: Id, 
-    c: Id
-) -> Option<(Id, Id)> {
-    println!("Validating mulset: ?a = {:?}, ?b = {:?}, ?c = {:?}", a, b, c);
-
-    let is_square = |id: Id| -> Option<Id> {
-        for node in &egraph[id].nodes {
-            if let SmtLang::Pow([base, exponent]) = node {
-                if let Some(SmtLang::Constant(c)) = egraph[*exponent].nodes.iter().find_map(|n| {
-                    if let SmtLang::Constant(val) = n {
-                        if val.into_inner() == 2.0 {
-                            Some(SmtLang::Constant(val.clone()))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }) {
-                    return Some(*base);
-                }
-            }
-        }
-        None
-    };
-
-    let a_base = is_square(a)?;
-    let b_base = is_square(b)?;
-
-    let get_symbol = |id: Id| -> Option<&egg::Symbol> {
-        egraph[id].nodes.iter().find_map(|node| {
-            if let SmtLang::Symbol(s) = node {
-                Some(s)
-            } else {
-                None
-            }
-        })
-    };
-
-    let is_valid_c = egraph[c].nodes.iter().any(|node| {
-        if let SmtLang::MulMultiset(children) = node {
-            let mut has_two = false;
-            let mut has_a = false;
-            let mut has_b = false;
-
-            for &child in children {
-                for inner_node in &egraph[child].nodes {
-                    match inner_node {
-                        SmtLang::Constant(c) if c.into_inner() == 2.0 => has_two = true,
-                        SmtLang::Symbol(symbol) if Some(symbol) == get_symbol(a_base) => has_a = true,
-                        SmtLang::Symbol(symbol) if Some(symbol) == get_symbol(b_base) => has_b = true,
-                        _ => {}
-                    }
-                }
-            }
-
-            has_two && has_a && has_b
-        } else {
-            false
-        }
-    });
-
-    if is_valid_c {
-        println!(
-            "Validation succeeded: a_base = {:?}, b_base = {:?}, product term matches",
-            a_base, b_base
-        );
-        return Some((a_base, b_base));
-    }
-
-    println!("Validation failed for a = {:?}, b = {:?}, c = {:?}", a, b, c);
-    None
-}
-
-
-
-fn condition_to_sort(egraph: &mut EGraph<SmtLang, ()>, _: Id, subst: &Subst) -> bool {
-    let x = subst["?x".parse().unwrap()];
-    let y = subst["?y".parse().unwrap()];
-    x < y // 比较节点的 ID，按顺序排列
-}
-
-pub struct SquareCollapseApplier;
-
-impl Applier<SmtLang, ()> for SquareCollapseApplier {
-    fn apply_one(
-        &self,
-        egraph: &mut EGraph<SmtLang, ()>,
-        id: Id,
-        subst: &Subst,
-        _expr: Option<&RecExpr<ENodeOrVar<SmtLang>>>,
-        _symbol: Symbol,
-    ) -> Vec<Id> {
-        let a_var: Var = "?a".parse().unwrap();
-        let b_var: Var = "?b".parse().unwrap();
-        let c_var: Var = "?c".parse().unwrap();
-
-        let a = subst[a_var];
-        let b = subst[b_var];
-        let c = subst[c_var];
-
-        println!("Matched: ?a = {:?}, ?b = {:?}, ?c = {:?}", a, b, c);
-
-        if let Some((x, y)) = validate_mulset(egraph, a, b, c) {
-            let add_id = egraph.add(SmtLang::Add([x, y]));
-            let constant_two = egraph.add(SmtLang::Constant(NotNan::new(2.0).unwrap()));
-            let pow_id = egraph.add(SmtLang::Pow([add_id, constant_two]));
-        
-            // 合并新节点到当前等价类
-            egraph.union(id, pow_id);
-        
-            println!("Merged node {:?} into class {:?}", pow_id, id);
-        
-            return vec![pow_id];
-        }
-
-        vec![]
-    }
-}
-
 
 impl Analysis<SmtLang> for ConstantFold {
     type Data = Option<(NotNan<f64>, PatternAst<SmtLang>)>;
@@ -194,55 +59,46 @@ impl Analysis<SmtLang> for ConstantFold {
     }
 }
 
-
-pub fn rules() -> Vec<Rewrite<SmtLang, ()>> {
+pub fn rules() -> Vec<Rewrite<SmtLang, ConstantFold>> {
     vec![
-        Rewrite::new(
-            "square-collapse-mulset",
-            "(add ?a ?b ?c)".parse::<Pattern<SmtLang>>().unwrap(),
-            SquareCollapseApplier,
-        )
-        .unwrap(),
-    
-    // rw!("normalize-add-mulset"; "(add ?x ?y)" => "(add ?y ?x)" if condition_to_sort),
-    // rw!("normalize-mul-mulset"; "(mul ?x ?y)" => "(mul ?y ?x)" if condition_to_sort),
-    // rw!("flatten-add-mulset"; "(add ?a (add ?b ?c))" => "(add ?a ?b ?c)"),
-    // rw!("flatten-mul-mulset"; "(mul ?a (mul ?b ?c))" => "(mul ?a ?b ?c)"),
-    // rw!("remove-duplicate-add"; "(add ?a ?a)" => "(mul ?a 2)"),
-    // rw!("remove-duplicate-mul"; "(mul ?a ?a)" => "(^ ?a 2)"),
+        rw!("gt_lt_swap"; "(> ?a ?b)" => "(< ?b ?a)"),
+        rw!("ge_le_swap"; "(>= ?a ?b)" => "(<= ?b ?a)"),
 
+        // 消除冗余项
+        rw!("zero-add"; "(+ ?a 0)" => "?a"),
+        rw!("zero-mul"; "(* ?a 0)" => "0"),
+        rw!("mul-one"; "(* ?a 1)" => "?a"),
+
+        // 扁平化加法
+        rw!("flat-sum"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
+        rw!("flat-prod"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+
+        // 线性化分数项
+        rw!("div-linear"; "(/ 1 (^ (+ ?a ?b) 2))" => "(* 0.5 (^ (+ ?a ?b) -2))"),
+
+        // 提取公因式
+        rw!("factor-out"; "(+ (* ?x ?y) (* ?x ?z))" => "(* ?x (+ ?y ?z))"),
+
+        // 分布律展开
+        rw!("distribute"; "(* ?x (+ ?y ?z))" => "(+ (* ?x ?y) (* ?x ?z))"),
+
+        // 平方公式的展开与折叠
+        rw!("square-expand"; "(^ (+ ?a ?b) 2)" => "(+ (^ ?a 2) (+ (^ ?b 2) (* 2 (* ?a ?b))))"),
+        rw!("square-collapse"; "(+ (^ ?a 2) (+ (^ ?b 2) (* 2 (* ?a ?b))))" => "(^ (+ ?a ?b) 2)"),
     ]
 }
 
-
-
 pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
     let rewrites = rules();
-    let runner = Runner::default()
-        .with_expr(expr)
-        .with_scheduler(SimpleScheduler) // 强制简单调度器
-        .with_iter_limit(10) // 限制迭代次数
-        .with_node_limit(10_000) // 限制节点数
-        .run(&rewrites);
-    dbg!(expr);
+    let runner = Runner::default().with_expr(expr).run(&rewrites);
+
     if runner.roots.is_empty() {
         panic!("No roots found after applying rewrites.");
     }
-    for (i, iteration) in runner.iterations.iter().enumerate() {
-        println!("Iteration {}: Applied {} rules", i + 1, iteration.applied.len());
-        for applied in &iteration.applied {
-            println!("  Rule applied: {:?}", applied);
-            let rule_name = applied.0.to_string();
-            println!("Input after rule application: {:?}", runner.egraph);
-            
-            // if rule_name == "flatten-add" || rule_name == "flatten-mul" {
-            //     println!("E-Graph state after {}: {:#?}", rule_name, runner.egraph);
-            // }
-        }
-    }
-    dbg!(expr);
+
     let extractor = Extractor::new(&runner.egraph, AstSize);
     let (_, best_expr) = extractor.find_best(runner.roots[0]);
+
     best_expr
 }
 
@@ -254,5 +110,34 @@ pub fn rewrite_expressions<'a>(expressions: Vec<RecExpr<SmtLang>>) -> Vec<String
             let rewritten = apply_rewrites(&expr);
             format!("{}", rewritten) // 将重写结果格式化为字符串
         })
+        .collect()
+}
+
+/// 表达式复杂度计算
+fn expression_complexity(expr: &str) -> usize {
+    expr.chars().filter(|&c| c == '+' || c == '*' || c == '^').count()
+}
+
+pub fn rewrite_expressions_with_limit(expressions: Vec<RecExpr<SmtLang>>, limit: usize) -> Vec<String> {
+    expressions
+        .into_iter()
+        .map(|expr| {
+            let complexity = expression_complexity(&format!("{}", expr));
+            if complexity <= limit {
+                // 简单表达式，直接匹配
+                apply_rewrites(&expr)
+            } else {
+                // 复杂表达式，使用缓存逻辑
+                let mut cache: HashMap<String, RecExpr<SmtLang>> = HashMap::new();
+                if let Some(cached_result) = cache.get(&format!("{}", expr)) {
+                    cached_result.clone()
+                } else {
+                    let result = apply_rewrites(&expr);
+                    cache.insert(format!("{}", expr), result.clone());
+                    result
+                }
+            }
+        })
+        .map(|rewritten| format!("{}", rewritten))
         .collect()
 }
