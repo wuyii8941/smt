@@ -6,32 +6,17 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct ConstantFold;
 
-fn is_sqrt_expr() -> impl Fn(&mut EGraph<SmtLang, ConstantFold>, Id, &Subst) -> bool {
-    println!("DEBUG():ENTER is_sqrt_expr");
-
-    move |egraph: &mut EGraph<SmtLang, ConstantFold>, id: Id, _subst: &Subst| {
-        // 获取 `EClass` 里所有的 `Id`
-        let class = &egraph[id];
-
-        // 遍历 `EClass` 里的所有节点，看看是否有 `Sqrt`
-        let matched = class.nodes.iter().any(|n| matches!(n, SmtLang::Sqrt(_)));
-
-        if matched {
-            println!("rewrite(): Matched sqrt node in EClass {}", id);
-            return true;
-        }
-
-        // 如果 `id` 不是 `Sqrt`，但 `EClass` 里有 `Sqrt`，也返回 true
-        for node in &class.nodes {
-            if let SmtLang::Sqrt(inner) = node {
-                println!("rewrite(): Found sqrt in EClass {}, checking inner node {:?}", id, inner);
-                return true;
-            }
-        }
-
-        println!("rewrite(): No sqrt found in EClass {}", id);
-        false
-    }
+fn expression_cost(expr: &RecExpr<SmtLang>) -> usize {
+    expr.as_ref()
+        .iter()
+        .map(|node| match node {
+            SmtLang::Add(_) => 1,
+            SmtLang::Mul(_) => 2,
+            SmtLang::Pow(_) => 5, // 假设乘方的代价较高
+            SmtLang::Sqrt(_) => 10, // 假设平方根的代价最高
+            _ => 0,
+        })
+        .sum() // 累加代价
 }
 
 impl Analysis<SmtLang> for ConstantFold {
@@ -215,6 +200,14 @@ impl Analysis<SmtLang> for ConstantFold {
     }
 }
 
+// /// 计算表达式的复杂度（通过加法、乘法等操作的数量）
+// fn expression_complexity(expr: &str) -> usize {
+//     expr.chars()
+//         .filter(|&c| c == '+' || c == '*' || c == '^')
+//         .count()
+// }
+
+
 pub fn rules() -> Vec<Rewrite<SmtLang, ConstantFold>> {
     let mut rules = vec![
         // 加法和乘法的交换律
@@ -253,8 +246,7 @@ pub fn rules() -> Vec<Rewrite<SmtLang, ConstantFold>> {
         rewrite!("sqrt-mul-expand"; "(* (sqrt ?x) (sqrt ?y))" => "(sqrt (* ?x ?y))"),
         // 根式分母有理化
         rewrite!("rationalize-denominator"; "(/ ?a (sqrt ?b))" => "(/ (* ?a (sqrt ?b)) ?b)"),
-        rewrite!("sqrt-ineq-gt"; "(> (sqrt ?a) ?b)" => "(> ?a (^ ?b 2))"),
-
+        rewrite!("sqrt-ineq-gt-alt"; "(> (sqrt ?a) ?b)" => "(> ?a (^ ?b 2))") ,
         rewrite!("sqrt-ineq-lt"; "(< (sqrt ?a) ?b)" => "(< ?a (^ ?b 2))"),
         rewrite!("sqrt-ineq-ge"; "(>= (sqrt ?a) ?b)" => "(>= ?a (^ ?b 2))"),
         rewrite!("sqrt-ineq-le"; "(<= (sqrt ?a) ?b)" => "(<= ?a (^ ?b 2))"),
@@ -267,23 +259,11 @@ pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
     println!("Original expression: {}", expr);
     println!("Checking initial EGraph state:");
 
-    // let mut runner = Runner::default().with_expr(expr);
-
-//     println!("EGraph state before applying rewrites:");
-//     for class in runner.egraph.classes() {
-//         println!("EClass {}: {:?}", class.id, class.nodes);
-//     }
-
-//     println!("Checking EGraph classes before rewrite:");
-// for class in runner.egraph.classes() {
-//     for node in &class.nodes {
-//         if let SmtLang::Sqrt(inner) = node {
-//             println!("Found sqrt in EGraph class {}: {:?}", class.id, node);
-//         }
-//     }
-// }
-//     runner = runner.run(&rewrites);
-    
+    let cost = expression_cost(expr);
+    if cost > 50 { // 设定一个代价阈值，超过阈值则不重写
+        println!("Expression has too high cost ({}), skipping rewrite.", cost);
+        return expr.clone(); // 返回原始表达式
+    }
 
     let runner = Runner::default()
         .with_expr(expr)
@@ -299,12 +279,8 @@ pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
             }
             Ok(())
         })
+        
         .run(&rewrites);
-
-    
-    
-    println!("After rewrites roots: {:?}", runner.roots);
-
 
     if runner.roots.is_empty() {
         panic!("No roots found after applying rewrites.");
@@ -317,7 +293,6 @@ pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
     best_expr
 }
 
-/// 批量重写表达式
 pub fn rewrite_expressions<'a>(expressions: Vec<RecExpr<SmtLang>>) -> Vec<String> {
     expressions
         .into_iter()
@@ -328,13 +303,8 @@ pub fn rewrite_expressions<'a>(expressions: Vec<RecExpr<SmtLang>>) -> Vec<String
         .collect()
 }
 
-/// 表达式复杂度计算
-fn expression_complexity(expr: &str) -> usize {
-    expr.chars()
-        .filter(|&c| c == '+' || c == '*' || c == '^')
-        .count()
-}
 
+// 修改rewrite_expressions_with_limit，结合表达式代价和限制
 pub fn rewrite_expressions_with_limit(
     expressions: Vec<RecExpr<SmtLang>>,
     limit: usize,
@@ -342,20 +312,12 @@ pub fn rewrite_expressions_with_limit(
     expressions
         .into_iter()
         .map(|expr| {
-            let complexity = expression_complexity(&format!("{}", expr));
+            let complexity = expression_cost(&expr);
             if complexity <= limit {
-                // 简单表达式，直接匹配
                 apply_rewrites(&expr)
             } else {
-                // 复杂表达式，使用缓存逻辑
-                let mut cache: HashMap<String, RecExpr<SmtLang>> = HashMap::new();
-                if let Some(cached_result) = cache.get(&format!("{}", expr)) {
-                    cached_result.clone()
-                } else {
-                    let result = apply_rewrites(&expr);
-                    cache.insert(format!("{}", expr), result.clone());
-                    result
-                }
+                println!("Expression too complex (cost: {}), skipping rewrite.", complexity);
+                expr // 如果复杂度过高，直接返回原表达式
             }
         })
         .map(|rewritten| format!("{}", rewritten))
