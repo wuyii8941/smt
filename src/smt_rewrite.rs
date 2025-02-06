@@ -1,5 +1,7 @@
 use crate::smt_lang::SmtLang;
 use egg::{rewrite as rw, *};
+use egg::{CostFunction};
+
 use ordered_float::NotNan;
 use std::collections::HashMap;
 
@@ -11,12 +13,44 @@ fn expression_cost(expr: &RecExpr<SmtLang>) -> usize {
         .iter()
         .map(|node| match node {
             SmtLang::Add(_) => 1,
-            SmtLang::Mul(_) => 2,
-            SmtLang::Pow(_) => 5, // 假设乘方的代价较高
-            SmtLang::Sqrt(_) => 10, // 假设平方根的代价最高
+            SmtLang::Mul(_) => 1,  
+            SmtLang::Div([_, b]) if matches!(expr[*b], SmtLang::Sqrt(_)) => 0, 
+            SmtLang::Pow(_) => 5,  
+            SmtLang::Sqrt(_) => 10, 
             _ => 0,
         })
-        .sum() // 累加代价
+        .sum()
+}
+
+#[derive(Default)]
+struct MyCostFunction;
+
+impl CostFunction<SmtLang> for MyCostFunction {
+    type Cost = usize;
+
+    fn cost<C>(&mut self, enode: &SmtLang, mut child_costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        let node_cost = match enode {
+            SmtLang::Add(_) => 1,
+            SmtLang::Mul(_) => 1,
+            SmtLang::Div([_, b]) => {
+                let denominator_cost = child_costs(*b);
+                
+                if let SmtLang::Sqrt(_) = enode {
+                    40 + denominator_cost 
+                } else {
+                    1 + denominator_cost
+                }
+            }
+            SmtLang::Sqrt(_) => 20, 
+            _ => 0,
+        };
+
+        // 修正 `child_costs` 以符合 `fold` 要求的 (usize, Id) -> usize 形式
+        enode.fold(node_cost, |acc, id| acc + child_costs(id))
+    }
 }
 
 impl Analysis<SmtLang> for ConstantFold {
@@ -24,17 +58,23 @@ impl Analysis<SmtLang> for ConstantFold {
 
     fn make(egraph: &EGraph<SmtLang, ConstantFold>, enode: &SmtLang) -> Self::Data {
         let x = |i: &Id| egraph[*i].data.as_ref().map(|d| d.0);
+    
         Some(match enode {
+            // 处理常数
             SmtLang::Constant(c) => (*c, format!("{}", c).parse().unwrap()),
+    
+            // 处理符号变量
             SmtLang::Symbol(symbol) => {
                 println!("Symbol encountered: {:?}", symbol);
                 return None;
             }
+    
+            // 处理加法
             SmtLang::Add(children) => {
                 let mut sum = NotNan::new(0.0).unwrap();
                 let mut has_symbol = false;
                 let mut pattern_parts = Vec::new();
-
+    
                 for &child in children {
                     match x(&child) {
                         Some(value) => {
@@ -44,22 +84,23 @@ impl Analysis<SmtLang> for ConstantFold {
                         None => has_symbol = true,
                     }
                 }
-
+    
                 if has_symbol {
                     return None;
                 }
-
+    
                 (
                     sum,
                     format!("(+ {})", pattern_parts.join(" ")).parse().unwrap(),
                 )
             }
-
+    
+            // 处理乘法
             SmtLang::Mul(children) => {
                 let mut product = NotNan::new(1.0).unwrap();
                 let mut has_symbol = false;
                 let mut pattern_parts = Vec::new();
-
+    
                 for &child in children {
                     match x(&child) {
                         Some(value) => {
@@ -69,91 +110,36 @@ impl Analysis<SmtLang> for ConstantFold {
                         None => has_symbol = true,
                     }
                 }
-
+    
                 if has_symbol {
                     return None;
                 }
-
+    
                 (
                     product,
                     format!("(* {})", pattern_parts.join(" ")).parse().unwrap(),
                 )
             }
-            SmtLang::Div([a, b]) if x(b) != Some(NotNan::new(0.0).unwrap()) => (
-                x(a)? / x(b)?,
-                format!("(/ {} {})", x(a)?, x(b)?).parse().unwrap(),
-            ),
-            SmtLang::Pow([a, b]) => {
-                let base = x(a)?;
-                let exponent = x(b)?.into_inner(); // 转换 NotNan<f64> 为 f64
-                (
-                    NotNan::new(base.powf(exponent)).unwrap(), // 重新封装为 NotNan<f64>
-                    format!("(^ {} {})", base, exponent).parse().unwrap(),
-                )
+    
+            // 处理除法
+            SmtLang::Div([a, b]) => {
+                let left_opt = x(a);
+                let right_opt = x(b);
+    
+                if let (Some(left), Some(right)) = (left_opt, right_opt) {
+                    if right != NotNan::new(0.0).unwrap() {
+                        return Some((
+                            left / right,
+                            format!("(/ {} {})", left, right).parse().unwrap(),
+                        ));
+                    }
+                }
+    
+                // 不能计算时，返回符号化表示
+                return None;
             }
-            SmtLang::Gt([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new((left > right) as u8 as f64).unwrap(),
-                    format!("(> {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::Ge([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new((left >= right) as u8 as f64).unwrap(),
-                    format!("(>= {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::Lt([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new((left < right) as u8 as f64).unwrap(),
-                    format!("(< {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::Le([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new((left <= right) as u8 as f64).unwrap(),
-                    format!("(<= {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::Eq([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new((left == right) as u8 as f64).unwrap(),
-                    format!("(= {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::And([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new(((left != 0.0) && (right != 0.0)) as u8 as f64).unwrap(),
-                    format!("(and {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::Or([a, b]) => {
-                let left = x(a)?;
-                let right = x(b)?;
-                (
-                    NotNan::new(((left != 0.0) || (right != 0.0)) as u8 as f64).unwrap(),
-                    format!("(or {} {})", left, right).parse().unwrap(),
-                )
-            }
-            SmtLang::Not(a) => {
-                let value = x(a)?;
-                (
-                    NotNan::new((value == 0.0) as u8 as f64).unwrap(),
-                    format!("(not {})", value).parse().unwrap(),
-                )
-            }
+    
+            // 处理平方根
             SmtLang::Sqrt(a) => {
                 let value_opt = x(a);
                 if let Some(value) = value_opt {
@@ -164,15 +150,35 @@ impl Analysis<SmtLang> for ConstantFold {
                         ));
                     }
                 }
-                println!("Skipping direct sqrt computation for non-constant {:?}", a);
-                return None; // 直接返回 None
+    
+                // 不能计算时，返回符号化表示
+                return None;
             }
+    
+            // 处理大于运算
+            SmtLang::Gt([a, b]) => {
+                let left_opt = x(a);
+                let right_opt = x(b);
+    
+                if let (Some(left), Some(right)) = (left_opt, right_opt) {
+                    return Some((
+                        NotNan::new((left > right) as u8 as f64).unwrap(),
+                        format!("(> {} {})", left, right).parse().unwrap(),
+                    ));
+                }
+    
+                // 不能计算时，返回符号化表示
+                return None;
+            }
+    
             _ => {
                 println!("BadOp detected in node: {:?}", enode);
                 return None;
             }
         })
     }
+    
+    
 
     fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
         merge_option(to, from, |a, b| {
@@ -210,28 +216,28 @@ impl Analysis<SmtLang> for ConstantFold {
 
 pub fn rules() -> Vec<Rewrite<SmtLang, ConstantFold>> {
     let mut rules = vec![
-        // 加法和乘法的交换律
-        rewrite!("add-comm"; "(+ ?a ?b)" => "(+ ?b ?a)"),
-        rewrite!("mul-comm"; "(* ?a ?b)" => "(* ?b ?a)"),
-        // 加法和乘法的结合律
-        rewrite!("add-assoc"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
-        rewrite!("add-assoc-rev"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"),
-        rewrite!("mul-assoc"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
-        rewrite!("mul-assoc-rev"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"),
-        // 减法的等价重写
-        rewrite!("sub-canon"; "(+ ?a (- ?b ?c))" => "(- (+ ?a ?b) ?c)"),
-        rewrite!("sub-canon-rev"; "(- (+ ?a ?b) ?c)" => "(+ ?a (- ?b ?c))"),
-        // 除法的等价重写
-        rewrite!("div-canon"; "(/ ?x ?y)" => "(* ?x (/ 1 ?y))"),
-        rewrite!("div-canon-rev"; "(* ?x (/ 1 ?y))" => "(/ ?x ?y)"),
-        // 处理加法和乘法的单位元
-        rewrite!("add-zero"; "(+ ?a 0)" => "?a"),
-        rewrite!("add-zero-rev"; "?a" => "(+ ?a 0)"),
-        rewrite!("mul-one"; "(* ?a 1)" => "?a"),
-        rewrite!("mul-one-rev"; "?a" => "(* ?a 1)"),
-        // 平方公式的展开与折叠
-        rewrite!("square-expand"; "(^ (+ ?a ?b) 2)" => "(+ (^ ?a 2) (+ (^ ?b 2) (* 2 (* ?a ?b))))"),
-        rewrite!("square-collapse"; "(+ (^ ?a 2) (+ (^ ?b 2) (* 2 (* ?a ?b))))" => "(^ (+ ?a ?b) 2)"),
+        // // 加法和乘法的交换律
+        // rewrite!("add-comm"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+        // rewrite!("mul-comm"; "(* ?a ?b)" => "(* ?b ?a)"),
+        // // 加法和乘法的结合律
+        // rewrite!("add-assoc"; "(+ ?a (+ ?b ?c))" => "(+ (+ ?a ?b) ?c)"),
+        // rewrite!("add-assoc-rev"; "(+ (+ ?a ?b) ?c)" => "(+ ?a (+ ?b ?c))"),
+        // rewrite!("mul-assoc"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
+        // rewrite!("mul-assoc-rev"; "(* (* ?a ?b) ?c)" => "(* ?a (* ?b ?c))"),
+        // // 减法的等价重写
+        // rewrite!("sub-canon"; "(+ ?a (- ?b ?c))" => "(- (+ ?a ?b) ?c)"),
+        // rewrite!("sub-canon-rev"; "(- (+ ?a ?b) ?c)" => "(+ ?a (- ?b ?c))"),
+        // // 除法的等价重写
+        // // rewrite!("div-canon"; "(/ ?x ?y)" => "(* ?x (/ 1 ?y))"),
+        // rewrite!("div-canon-rev"; "(* ?x (/ 1 ?y))" => "(/ ?x ?y)"),
+        // // 处理加法和乘法的单位元
+        // rewrite!("add-zero"; "(+ ?a 0)" => "?a"),
+        // rewrite!("add-zero-rev"; "?a" => "(+ ?a 0)"),
+        // rewrite!("mul-one"; "(* ?a 1)" => "?a"),
+        // rewrite!("mul-one-rev"; "?a" => "(* ?a 1)"),
+        // // 平方公式的展开与折叠
+        // rewrite!("square-expand"; "(^ (+ ?a ?b) 2)" => "(+ (^ ?a 2) (+ (^ ?b 2) (* 2 (* ?a ?b))))"),
+        // rewrite!("square-collapse"; "(+ (^ ?a 2) (+ (^ ?b 2) (* 2 (* ?a ?b))))" => "(^ (+ ?a ?b) 2)"),
         // 均值不等式重写
         rewrite!(
             "apply-mean-inequality";
@@ -240,12 +246,13 @@ pub fn rules() -> Vec<Rewrite<SmtLang, ConstantFold>> {
                 (/ ?z (sqrt (+ (^ ?z 2) (* 8 ?x ?y)))))" =>
             "(>= (+ ?x ?y ?z) 1)"
         ),
+        // 平方根分母有理化
+        rewrite!("rationalize-denominator"; "(/ ?a (sqrt ?b))" => "(/ (* ?a (sqrt ?b)) ?b)"),
+ 
         // 平方根平方消除
         rewrite!("sqrt-square"; "(^ (sqrt ?x) 2)" => "?x"),
         // 根式乘法展开
         rewrite!("sqrt-mul-expand"; "(* (sqrt ?x) (sqrt ?y))" => "(sqrt (* ?x ?y))"),
-        // 根式分母有理化
-        rewrite!("rationalize-denominator"; "(/ ?a (sqrt ?b))" => "(/ (* ?a (sqrt ?b)) ?b)"),
         rewrite!("sqrt-ineq-gt-alt"; "(> (sqrt ?a) ?b)" => "(> ?a (^ ?b 2))") ,
         rewrite!("sqrt-ineq-lt"; "(< (sqrt ?a) ?b)" => "(< ?a (^ ?b 2))"),
         rewrite!("sqrt-ineq-ge"; "(>= (sqrt ?a) ?b)" => "(>= ?a (^ ?b 2))"),
@@ -272,10 +279,12 @@ pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
             if iter_index > 0 {
                 println!("--- Iteration {} ---", iter_index);
                 println!("Applied rules: {:?}", runner.iterations[iter_index - 1].applied);
+
             }
             println!("Current egraph state:");
             for id in 0..runner.egraph.number_of_classes() {
-                println!("EClass {}: {:?}", id, runner.egraph[Id::from(id)].nodes);
+                println!("EClass {}: {:?}", id, runner.egraph[Id::from(id)]);
+
             }
             Ok(())
         })
@@ -286,10 +295,11 @@ pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
         panic!("No roots found after applying rewrites.");
     }
 
-    let extractor = Extractor::new(&runner.egraph, AstSize);
+    let extractor = Extractor::new(&runner.egraph, MyCostFunction::default());
     let (_, best_expr) = extractor.find_best(runner.roots[0]);
-    println!("Best expression found: {}", best_expr);
 
+    println!("Best expression found (cost {}): {}", cost, best_expr);
+    
     best_expr
 }
 
