@@ -1,0 +1,6 @@
+(declare-const a Real)
+(assert (<= 1 a))
+(assert (not (< 1 (^ a 2))))
+(check-sat)
+(get-model)
+(exit)

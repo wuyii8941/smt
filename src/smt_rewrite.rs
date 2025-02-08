@@ -16,7 +16,7 @@ fn expression_cost(expr: &RecExpr<SmtLang>) -> usize {
             SmtLang::Mul(_) => 1,  
             SmtLang::Div([_, b]) if matches!(expr[*b], SmtLang::Sqrt(_)) => 0, 
             SmtLang::Pow(_) => 5,  
-            SmtLang::Sqrt(_) => 10, 
+            SmtLang::Sqrt(_) => 5, 
             _ => 0,
         })
         .sum()
@@ -267,7 +267,7 @@ pub fn apply_rewrites(expr: &RecExpr<SmtLang>) -> RecExpr<SmtLang> {
     println!("Checking initial EGraph state:");
 
     let cost = expression_cost(expr);
-    if cost > 50 { // 设定一个代价阈值，超过阈值则不重写
+    if cost > 100 { // 设定一个代价阈值，超过阈值则不重写
         println!("Expression has too high cost ({}), skipping rewrite.", cost);
         return expr.clone(); // 返回原始表达式
     }
@@ -314,22 +314,22 @@ pub fn rewrite_expressions<'a>(expressions: Vec<RecExpr<SmtLang>>) -> Vec<String
 }
 
 
-// 修改rewrite_expressions_with_limit，结合表达式代价和限制
-pub fn rewrite_expressions_with_limit(
-    expressions: Vec<RecExpr<SmtLang>>,
-    limit: usize,
-) -> Vec<String> {
-    expressions
-        .into_iter()
-        .map(|expr| {
-            let complexity = expression_cost(&expr);
-            if complexity <= limit {
-                apply_rewrites(&expr)
-            } else {
-                println!("Expression too complex (cost: {}), skipping rewrite.", complexity);
-                expr // 如果复杂度过高，直接返回原表达式
-            }
-        })
-        .map(|rewritten| format!("{}", rewritten))
-        .collect()
-}
+// // 修改rewrite_expressions_with_limit，结合表达式代价和限制
+// pub fn rewrite_expressions_with_limit(
+//     expressions: Vec<RecExpr<SmtLang>>,
+//     limit: usize,
+// ) -> Vec<String> {
+//     expressions
+//         .into_iter()
+//         .map(|expr| {
+//             let complexity = expression_cost(&expr);
+//             if complexity <= limit {
+//                 apply_rewrites(&expr)
+//             } else {
+//                 println!("Expression too complex (cost: {}), skipping rewrite.", complexity);
+//                 expr // 如果复杂度过高，直接返回原表达式
+//             }
+//         })
+//         .map(|rewritten| format!("{}", rewritten))
+//         .collect()
+// }
